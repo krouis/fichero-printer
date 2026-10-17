@@ -209,6 +209,25 @@ asyncio.run(main())
 
 The package exports `PrinterClient`, `connect`, `PrinterError`, `PrinterNotFound`, `PrinterTimeout`, `PrinterNotReady`, and `PrinterStatus`.
 
+## Python tests
+
+```sh
+uv sync --locked --group test --extra usb
+uv run --no-sync python -m pytest -q
+```
+
+Tests use simulated BLE notifications, RFCOMM sockets, and USB devices; no printer,
+Bluetooth adapter, libusb backend, or root access is required. GitHub Actions runs
+these tests on pushes, pull requests, and manual dispatches, including a
+Bluetooth-only installation without PyUSB.
+
+To run the same workflow locally with [act](https://nektosact.com/) and Docker:
+
+```sh
+act push -W .github/workflows/python-tests.yml \
+  -P ubuntu-latest=catthehacker/ubuntu:act-latest
+```
+
 ## TODO
 
 - [ ] Emoji support in text labels. The default Pillow font has no emoji glyphs, so they render as squares. Needs two-pass rendering: split text into emoji/non-emoji segments, render emoji with Apple Color Emoji (macOS) or Noto Color Emoji (Linux) using `embedded_color=True`, then composite onto the label.
