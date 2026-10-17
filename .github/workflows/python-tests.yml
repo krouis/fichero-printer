@@ -15,6 +15,10 @@ concurrency:
 jobs:
   test:
     name: Python ${{ matrix.python }} (USB extra=${{ matrix.usb }})
+    # Same-repository PRs are already tested by their push; test only fork PRs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -30,10 +34,11 @@ jobs:
       FICHERO_ADDR: ''
       FICHERO_TRANSPORT: ''
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
         with:
-          enable-cache: false
+          enable-cache: true
+          cache-suffix: py${{ matrix.python }}-usb-${{ matrix.usb }}
       - name: Install test dependencies with USB
         if: matrix.usb
         run: uv sync --locked --group test --extra usb
