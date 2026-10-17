@@ -205,13 +205,12 @@ def _parse_paper(value: str) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fichero D11s Label Printer")
-    parser.add_argument("--address", default=os.environ.get("FICHERO_ADDR"),
+    parser.add_argument("--address",
                         help="BLE address (skip scanning, or set FICHERO_ADDR)")
     transport = parser.add_mutually_exclusive_group()
     transport.add_argument("--usb", action="store_true", help="Use USB (requires the usb extra)")
     parser.add_argument("--serial", help="Select USB printer by serial number")
     transport.add_argument("--classic", action="store_true",
-                        default=os.environ.get("FICHERO_TRANSPORT", "").lower() == "classic",
                         help="Use Classic Bluetooth (RFCOMM) instead of BLE (Linux only, "
                              "or set FICHERO_TRANSPORT=classic)")
     parser.add_argument("--channel", type=int, default=1,
@@ -262,10 +261,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.usb and args.classic:
-        parser.error("--usb conflicts with Classic transport (including FICHERO_TRANSPORT)")
     if args.usb and args.address:
-        parser.error("--usb conflicts with --address/FICHERO_ADDR; unset FICHERO_ADDR")
+        parser.error("--usb conflicts with --address")
+    # Environment defaults apply to Bluetooth only; an explicit --usb wins.
+    if not args.usb:
+        args.address = args.address or os.environ.get("FICHERO_ADDR")
+        args.classic = (args.classic
+                        or os.environ.get("FICHERO_TRANSPORT", "").lower() == "classic")
     if args.serial and not args.usb:
         parser.error("--serial requires --usb")
     if args.usb and args.command not in ("text", "image", "discover"):

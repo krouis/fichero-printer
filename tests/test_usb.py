@@ -215,6 +215,7 @@ async def test_cancelled_open_cleans_after_worker(hardware):
         ["--usb", "status"],
         ["--usb", "set", "density", "2"],
         ["--usb", "--classic", "text", "hello"],
+        ["--usb", "--address", "AA:BB:CC:DD:EE:FF", "text", "hello"],
         ["--serial", "x", "info"],
         ["--usb", "text", "hello", "--copies", "0"],
     ],
@@ -369,3 +370,24 @@ def test_cli_usb_print_dispatch():
         main()
     args = command.call_args.args[0]
     assert args.usb and args.serial == "example" and args.text == ["Hello USB!"]
+
+
+@pytest.mark.parametrize(
+    "arguments,address,classic",
+    [
+        (["--usb", "text", "hi"], None, False),
+        (["text", "hi"], "AA:BB:CC:DD:EE:FF", True),
+    ],
+)
+def test_cli_env_defaults_apply_to_bluetooth_only(arguments, address, classic):
+    from unittest.mock import AsyncMock
+
+    env = {"FICHERO_ADDR": "AA:BB:CC:DD:EE:FF", "FICHERO_TRANSPORT": "classic"}
+    with (
+        patch.dict("os.environ", env, clear=True),
+        patch("sys.argv", ["fichero"] + arguments),
+        patch("fichero.cli.cmd_text", new_callable=AsyncMock) as command,
+    ):
+        main()
+    args = command.call_args.args[0]
+    assert args.address == address and args.classic is classic

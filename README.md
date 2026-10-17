@@ -95,7 +95,7 @@ uv run --extra usb fichero --usb image label.png --copies 3
 uv run --extra usb fichero --usb --serial YOUR_USB_SERIAL image label.png
 ```
 
-Unset `FICHERO_ADDR` and `FICHERO_TRANSPORT=classic` when using USB.
+`--usb` ignores `FICHERO_ADDR` and `FICHERO_TRANSPORT`.
 Multiple connected printers require a serial selector; no serial is hardcoded.
 Only gap-separated stock is verified. Density and paper commands are sent as
 part of printing. USB `info`, `status`, and standalone `set` are unavailable:
