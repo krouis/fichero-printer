@@ -1,17 +1,22 @@
 """Optional PyUSB transport for the D11s (09c5:0200).
 
-Only raster printing is verified; no proprietary queries/notifications are used.
-Blocking libusb operations run in worker threads, serialized through cancellation.
+Replies to proprietary commands arrive on the bulk-IN endpoint with the same
+bytes as Bluetooth notifications. Blocking libusb operations run in worker
+threads, serialized through cancellation; a reader thread delivers replies.
 """
 
 import asyncio
 import sys
+import threading
 import warnings
 
 from fichero.printer import PrinterError, PrinterNotFound, PrinterTimeout
 
 USB_VID = 0x09C5
 USB_PID = 0x0200
+READ_SIZE = 512
+READ_POLL_MS = 100  # bounds how long closing waits for the reader thread
+DRAIN_TIMEOUT_MS = 50
 
 
 def _modules():
@@ -101,7 +106,7 @@ async def discover_usb() -> list[dict]:
 
 
 class USBClient:
-    """Async transport adapter; successful writes do not imply a printed label."""
+    """Async transport adapter with the write_gatt_char/start_notify interface."""
 
     is_usb = True
 
@@ -113,8 +118,11 @@ class USBClient:
         self._device = None
         self._interface = None
         self._endpoint = None
+        self._in_endpoint = None
         self._detached = False
         self._claimed = False
+        self._reader = None
+        self._reader_stop = threading.Event()
         self._lock = asyncio.Lock()
 
     def _open(self):
@@ -147,13 +155,17 @@ class USBClient:
                 inputs = [ep for ep in endpoints if ep.bEndpointAddress & 0x80]
                 if len(outputs) == 1 and inputs:
                     candidates.append(
-                        (interface.bInterfaceNumber, outputs[0].bEndpointAddress)
+                        (
+                            interface.bInterfaceNumber,
+                            outputs[0].bEndpointAddress,
+                            inputs[0].bEndpointAddress,
+                        )
                     )
             if len(candidates) != 1:
                 raise PrinterError(
                     "Expected one bidirectional USB Printer Class interface with bulk endpoints"
                 )
-            self._interface, self._endpoint = candidates[0]
+            self._interface, self._endpoint, self._in_endpoint = candidates[0]
             try:
                 active = device.is_kernel_driver_active(self._interface)
             except NotImplementedError:
@@ -163,12 +175,22 @@ class USBClient:
                 self._detached = True
             util.claim_interface(device, self._interface)
             self._claimed = True
+            self._drain(core)
         except (core.USBError, core.NoBackendError) as exc:
             raise _error(exc) from exc
         finally:
             for device in devices:
                 if device is not self._device:
                     util.dispose_resources(device)
+
+    def _drain(self, core):
+        # Unread replies survive closing and usblp rebinding; discard them so
+        # they are not taken as replies to this session's commands.
+        for _ in range(64):
+            try:
+                self._device.read(self._in_endpoint, READ_SIZE, timeout=DRAIN_TIMEOUT_MS)
+            except core.USBTimeoutError:
+                return
 
     def _close(self):
         if self._device is None:
@@ -177,6 +199,11 @@ class USBClient:
         device, self._device = self._device, None
         errors = []
         try:
+            # Stop reading before the interface is released.
+            if self._reader is not None:
+                self._reader_stop.set()
+                self._reader.join()
+                self._reader = None
             if self._claimed:
                 try:
                     util.release_interface(device, self._interface)
@@ -214,7 +241,31 @@ class USBClient:
                 warnings.warn(f"USB cleanup failed: {cleanup_error}", RuntimeWarning)
 
     async def start_notify(self, _uuid, callback):
-        """No USB notification protocol has been verified."""
+        if self._device is None:
+            raise PrinterError("USB transport is not connected")
+        core, _ = _modules()
+        loop = asyncio.get_running_loop()
+        device, endpoint, stop = self._device, self._in_endpoint, self._reader_stop
+
+        def read_loop():
+            while not stop.is_set():
+                try:
+                    data = device.read(endpoint, READ_SIZE, timeout=READ_POLL_MS)
+                except core.USBTimeoutError:
+                    continue
+                except (core.USBError, core.NoBackendError):
+                    return  # disconnected; pending replies time out
+                if data:
+                    try:
+                        loop.call_soon_threadsafe(callback, None, bytearray(data))
+                    except RuntimeError:
+                        return  # event loop closed
+
+        stop.clear()
+        self._reader = threading.Thread(
+            target=read_loop, name="fichero-usb-reader", daemon=True
+        )
+        self._reader.start()
 
     async def write_gatt_char(self, _uuid, data, response=False):
         def write():

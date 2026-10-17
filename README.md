@@ -89,6 +89,8 @@ uv sync --extra usb
 sudo apt install libusb-1.0-0
 
 uv run --extra usb fichero --usb discover
+uv run --extra usb fichero --usb info
+uv run --extra usb fichero --usb status
 uv run --extra usb fichero --usb text "Hello USB!"
 uv run --extra usb fichero --usb image label.png
 uv run --extra usb fichero --usb image label.png --copies 3
@@ -97,18 +99,20 @@ uv run --extra usb fichero --usb --serial YOUR_USB_SERIAL image label.png
 
 `--usb` ignores `FICHERO_ADDR` and `FICHERO_TRANSPORT`.
 Multiple connected printers require a serial selector; no serial is hardcoded.
-Only gap-separated stock is verified. Density and paper commands are sent as
-part of printing. USB `info`, `status`, and standalone `set` are unavailable:
-Bluetooth queries/notifications have not been demonstrated over USB. A completed
-USB write confirms transport delivery only, not acknowledgment or physical print
-completion. A timeout/partial write leaves the print outcome unknown; inspect the
-printer before retrying to avoid duplicate labels.
+Only gap-separated stock is verified. The printer answers the same commands as
+over Bluetooth, with the same reply bytes on the bulk-IN endpoint, so `info`,
+`status`, `set`, the cover/paper check before each copy, and the stop
+acknowledgment all work over USB. After a printed label the stop reply arrives
+once the label has finished (about 2.3s for a 30mm label). Replies left unread
+by an earlier session survive reconnection and are discarded on connect. A
+timeout/partial write leaves the print outcome unknown; inspect the printer
+before retrying to avoid duplicate labels.
 
 The [USB Printer Class specification](https://www.usb.org/sites/default/files/usbprint11a021811.pdf)
 defines a port byte separate from the proprietary Bluetooth status.
 Its bits are paper-empty (5), selected (4), and not-error (3). The observed `0x18`
 is not proof that D11s paper/cover sensors are reflected in it, so it is not used
-to gate printing or report readiness. No bulk-IN query is required to print.
+to gate printing or report readiness; the proprietary status query is used instead.
 
 ### Linux permissions and contention
 
@@ -149,10 +153,8 @@ bulk endpoints without resetting the device.
 Library users can use `connect(usb=True, serial=None)` and the existing print
 pipeline (`fichero.cli.do_print`), or `USBClient` directly. `discover_usb()` returns
 serial/bus/address records without claiming interfaces. `PrinterClient.is_usb`
-identifies the transport. On USB, `set_density`, `set_paper_type`, and `stop_print`
-return `False` because no acknowledgment is requested; successful transfers are
-reported through normal return and failures through `PrinterError` subclasses.
-All other reply-dependent protocol methods fail before sending USB commands.
+identifies the transport. All protocol methods behave as over Bluetooth;
+transport failures raise `PrinterError` subclasses.
 
 ## CLI Usage
 

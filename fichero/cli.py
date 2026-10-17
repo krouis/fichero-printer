@@ -54,10 +54,9 @@ async def do_print(
             print(f"  Copy {copy_num + 1}/{copies}...")
 
         # Check status before each copy (matches decompiled app behaviour)
-        if not pc.is_usb:
-            status = await pc.get_status()
-            if not status.ok:
-                raise PrinterNotReady(f"Printer not ready: {status}")
+        status = await pc.get_status()
+        if not status.ok:
+            raise PrinterNotReady(f"Printer not ready: {status}")
 
         # AiYin print sequence (from decompiled APK)
         await pc.set_paper_type(paper)
@@ -78,9 +77,7 @@ async def do_print(
         await asyncio.sleep(DELAY_AFTER_FEED)
 
         ok = await pc.stop_print()
-        if pc.is_usb:
-            await asyncio.sleep(DELAY_COMMAND_GAP)
-        elif not ok:
+        if not ok:
             print("  WARNING: no OK/0xAA from stop command")
 
     return True
@@ -129,8 +126,7 @@ async def cmd_text(args: argparse.Namespace) -> None:
         print(f'Printing "{text}"...')
         ok = await do_print(pc, img, args.density, paper=args.paper,
                             copies=args.copies, dither=False, max_rows=label_h)
-        print("USB transfers completed; acknowledgment and physical completion unverified."
-              if pc.is_usb else ("Done." if ok else "FAILED."))
+        print("Done." if ok else "FAILED.")
 
 
 async def cmd_image(args: argparse.Namespace) -> None:
@@ -142,8 +138,7 @@ async def cmd_image(args: argparse.Namespace) -> None:
         ok = await do_print(pc, img, args.density, paper=args.paper,
                             copies=args.copies, dither=not args.no_dither,
                             max_rows=label_h)
-        print("USB transfers completed; acknowledgment and physical completion unverified."
-              if pc.is_usb else ("Done." if ok else "FAILED."))
+        print("Done." if ok else "FAILED.")
 
 
 async def cmd_set(args: argparse.Namespace) -> None:
@@ -270,8 +265,6 @@ def main() -> None:
                         or os.environ.get("FICHERO_TRANSPORT", "").lower() == "classic")
     if args.serial and not args.usb:
         parser.error("--serial requires --usb")
-    if args.usb and args.command not in ("text", "image", "discover"):
-        parser.error("USB supports text, image and discover; info/status/set are unverified")
     if args.command == "discover" and not args.usb:
         parser.error("discover requires --usb")
     if getattr(args, "copies", 1) < 1:
