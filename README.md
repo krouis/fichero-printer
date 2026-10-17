@@ -88,7 +88,7 @@ uv sync --extra usb
 # Debian/Ubuntu:
 sudo apt install libusb-1.0-0
 
-uv run --extra usb fichero --usb discover
+uv run --extra usb fichero discover
 uv run --extra usb fichero --usb info
 uv run --extra usb fichero --usb status
 uv run --extra usb fichero --usb text "Hello USB!"

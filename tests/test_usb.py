@@ -254,6 +254,8 @@ async def test_cancelled_open_cleans_after_worker(hardware):
         ["--usb", "--classic", "text", "hello"],
         ["--usb", "--address", "AA:BB:CC:DD:EE:FF", "text", "hello"],
         ["--serial", "x", "info"],
+        ["--classic", "discover"],
+        ["--address", "AA:BB:CC:DD:EE:FF", "discover"],
         ["--usb", "text", "hello", "--copies", "0"],
     ],
 )
@@ -524,3 +526,18 @@ async def test_disconnect_stops_reader_and_times_out(hardware):
         assert not pc.client._reader.is_alive()
         with pytest.raises(PrinterTimeout):
             await pc.send(bytes.fromhex("10 ff 40"), wait=True, timeout=0.3)
+
+
+@pytest.mark.parametrize("arguments", [["discover"], ["--usb", "discover"]])
+def test_cli_discover_implies_usb(arguments):
+    from unittest.mock import AsyncMock
+
+    env = {"FICHERO_ADDR": "AA:BB:CC:DD:EE:FF", "FICHERO_TRANSPORT": "classic"}
+    with (
+        patch.dict("os.environ", env, clear=True),
+        patch("sys.argv", ["fichero"] + arguments),
+        patch("fichero.cli.cmd_discover", new_callable=AsyncMock) as command,
+    ):
+        main()
+    args = command.call_args.args[0]
+    assert args.usb and args.address is None and not args.classic

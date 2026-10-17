@@ -212,7 +212,7 @@ def main() -> None:
                         help="RFCOMM channel (default: 1, only used with --classic)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_discover = sub.add_parser("discover", help="List USB printers (with --usb)")
+    p_discover = sub.add_parser("discover", help="List USB printers")
     p_discover.set_defaults(func=cmd_discover)
 
     p_info = sub.add_parser("info", help="Show device info")
@@ -256,6 +256,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.command == "discover":
+        if args.address or args.classic:
+            parser.error("discover lists USB printers; --address/--classic do not apply")
+        args.usb = True
     if args.usb and args.address:
         parser.error("--usb conflicts with --address")
     # Environment defaults apply to Bluetooth only; an explicit --usb wins.
@@ -265,8 +269,6 @@ def main() -> None:
                         or os.environ.get("FICHERO_TRANSPORT", "").lower() == "classic")
     if args.serial and not args.usb:
         parser.error("--serial requires --usb")
-    if args.command == "discover" and not args.usb:
-        parser.error("discover requires --usb")
     if getattr(args, "copies", 1) < 1:
         parser.error("--copies must be positive")
     if args.usb and getattr(args, "paper", "gap") not in ("gap", "0"):
