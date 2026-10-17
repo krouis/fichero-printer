@@ -251,6 +251,7 @@ async def test_cancelled_open_cleans_after_worker(hardware):
     "arguments",
     [
         ["--usb", "text", "hello", "--paper", "black"],
+        ["--usb", "text", "hello", "--paper", "2"],
         ["--usb", "--classic", "text", "hello"],
         ["--usb", "--address", "AA:BB:CC:DD:EE:FF", "text", "hello"],
         ["--serial", "x", "info"],
@@ -541,3 +542,16 @@ def test_cli_discover_implies_usb(arguments):
         main()
     args = command.call_args.args[0]
     assert args.usb and args.address is None and not args.classic
+
+
+@pytest.mark.parametrize("paper", ["gap", "0", "unknown"])
+def test_cli_usb_accepts_papers_that_resolve_to_gap(paper):
+    from unittest.mock import AsyncMock
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("sys.argv", ["fichero", "--usb", "text", "hi", "--paper", paper]),
+        patch("fichero.cli.cmd_text", new_callable=AsyncMock) as command,
+    ):
+        main()
+    assert command.call_args.args[0].paper == 0

@@ -271,12 +271,12 @@ def main() -> None:
         parser.error("--serial requires --usb")
     if getattr(args, "copies", 1) < 1:
         parser.error("--copies must be positive")
-    if args.usb and getattr(args, "paper", "gap") not in ("gap", "0"):
-        parser.error("Only gap paper is verified over USB")
 
     # Resolve --paper string to int for print commands
     if hasattr(args, "paper") and isinstance(args.paper, str):
         args.paper = _parse_paper(args.paper)
+    if args.usb and getattr(args, "paper", PAPER_GAP) != PAPER_GAP:
+        parser.error("Only gap paper is verified over USB")
 
     try:
         asyncio.run(args.func(args))
