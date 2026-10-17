@@ -48,4 +48,4 @@ jobs:
         run: |
           uv run --no-sync python -c "import fichero, importlib.util; assert importlib.util.find_spec('usb') is None"
           uv run --no-sync fichero --help
-          uv run --no-sync python -m pytest -q --ignore=tests/test_usb.py
+          uv run --no-sync python -m pytest -q

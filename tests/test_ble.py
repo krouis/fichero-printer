@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from PIL import Image
 
-from fichero import PrinterNotFound, PrinterNotReady, PrinterTimeout, connect
+from fichero import (
+    PrinterNotFound,
+    PrinterNotReady,
+    PrinterTimeout,
+    RFCOMMClient,
+    USBClient,
+    connect,
+)
 from fichero.cli import do_print
 from fichero.printer import NOTIFY_UUID, WRITE_UUID, PrinterClient, find_printer
 
@@ -113,3 +120,37 @@ async def test_missing_notification_times_out():
     await printer.start()
     with pytest.raises(PrinterTimeout, match="No response"):
         await printer.send(b"unanswered", wait=True, timeout=0.01)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transport,size,delays",
+    [
+        (lambda: SimpleNamespace(), 200, [0.02, 0.02]),
+        (lambda: RFCOMMClient("AA:BB:CC:DD:EE:FF"), 16384, []),
+        (lambda: USBClient(), 256, [0.02, 0.02]),
+    ],
+)
+async def test_transport_chunk_pacing(transport, size, delays):
+    client = transport()
+    client.write_gatt_char = AsyncMock()
+    pc = PrinterClient(client)
+    with patch("fichero.printer.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        await pc.send_chunked(b"x" * (size + 1))
+    assert [len(c.args[1]) for c in client.write_gatt_char.call_args_list] == [size, 1]
+    assert [c.args[0] for c in sleep.await_args_list] == delays
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("classic", [False, True])
+async def test_bluetooth_reply_semantics(classic):
+    client = SimpleNamespace(is_classic=classic, write_gatt_char=AsyncMock())
+    pc = PrinterClient(client)
+
+    async def reply(*args, **kwargs):
+        pc._on_notify(None, bytearray(b"OK"))
+
+    client.write_gatt_char.side_effect = reply
+    assert await pc.set_density(2) is True
+    assert await pc.set_paper_type(0) is True
+    assert await pc.stop_print() is True

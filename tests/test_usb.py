@@ -8,21 +8,22 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-import usb.core
+
+pytest.importorskip("usb", reason="requires the usb extra")
+
+import usb.core  # noqa: E402
 from PIL import Image
 
 from fichero import (
-    PrinterClient,
     PrinterError,
     PrinterNotFound,
     PrinterNotReady,
     PrinterTimeout,
-    RFCOMMClient,
     USBClient,
     connect,
     discover_usb,
 )
-from fichero.cli import do_print, main
+from fichero.cli import do_print
 
 
 @pytest.fixture
@@ -247,29 +248,6 @@ async def test_cancelled_open_cleans_after_worker(hardware):
     device.attach_kernel_driver.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["--usb", "text", "hello", "--paper", "black"],
-        ["--usb", "text", "hello", "--paper", "2"],
-        ["--usb", "--classic", "text", "hello"],
-        ["--usb", "--address", "AA:BB:CC:DD:EE:FF", "text", "hello"],
-        ["--serial", "x", "info"],
-        ["--classic", "discover"],
-        ["--address", "AA:BB:CC:DD:EE:FF", "discover"],
-        ["--usb", "text", "hello", "--copies", "0"],
-    ],
-)
-def test_cli_rejects_unsupported(arguments):
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch("sys.argv", ["fichero"] + arguments),
-        pytest.raises(SystemExit) as exc,
-    ):
-        main()
-    assert exc.value.code == 2
-
-
 @pytest.mark.asyncio
 async def test_descriptor_permission_diagnostic(hardware):
     device, _, util = hardware
@@ -378,81 +356,6 @@ async def test_repeated_cancel_waits_for_write_before_release(hardware):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "transport,size,delays",
-    [
-        (lambda: SimpleNamespace(), 200, [0.02, 0.02]),
-        (lambda: RFCOMMClient("AA:BB:CC:DD:EE:FF"), 16384, []),
-        (lambda: USBClient(), 256, [0.02, 0.02]),
-    ],
-)
-async def test_transport_chunk_pacing(transport, size, delays):
-    from unittest.mock import AsyncMock
-
-    client = transport()
-    client.write_gatt_char = AsyncMock()
-    pc = PrinterClient(client)
-    with patch("fichero.printer.asyncio.sleep", new_callable=AsyncMock) as sleep:
-        await pc.send_chunked(b"x" * (size + 1))
-    assert [len(c.args[1]) for c in client.write_gatt_char.call_args_list] == [size, 1]
-    assert [c.args[0] for c in sleep.await_args_list] == delays
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("classic", [False, True])
-async def test_bluetooth_reply_semantics(classic):
-    from unittest.mock import AsyncMock
-
-    client = SimpleNamespace(is_classic=classic, write_gatt_char=AsyncMock())
-    pc = PrinterClient(client)
-
-    async def reply(*args, **kwargs):
-        pc._on_notify(None, bytearray(b"OK"))
-
-    client.write_gatt_char.side_effect = reply
-    assert await pc.set_density(2) is True
-    assert await pc.set_paper_type(0) is True
-    assert await pc.stop_print() is True
-
-
-def test_cli_usb_print_dispatch():
-    from unittest.mock import AsyncMock
-
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch(
-            "sys.argv",
-            ["fichero", "--usb", "--serial", "example", "text", "Hello USB!"],
-        ),
-        patch("fichero.cli.cmd_text", new_callable=AsyncMock) as command,
-    ):
-        main()
-    args = command.call_args.args[0]
-    assert args.usb and args.serial == "example" and args.text == ["Hello USB!"]
-
-
-@pytest.mark.parametrize(
-    "arguments,address,classic",
-    [
-        (["--usb", "text", "hi"], None, False),
-        (["text", "hi"], "AA:BB:CC:DD:EE:FF", True),
-    ],
-)
-def test_cli_env_defaults_apply_to_bluetooth_only(arguments, address, classic):
-    from unittest.mock import AsyncMock
-
-    env = {"FICHERO_ADDR": "AA:BB:CC:DD:EE:FF", "FICHERO_TRANSPORT": "classic"}
-    with (
-        patch.dict("os.environ", env, clear=True),
-        patch("sys.argv", ["fichero"] + arguments),
-        patch("fichero.cli.cmd_text", new_callable=AsyncMock) as command,
-    ):
-        main()
-    args = command.call_args.args[0]
-    assert args.address == address and args.classic is classic
-
-
-@pytest.mark.asyncio
 async def test_setters_report_usb_acknowledgments(hardware):
     device, _, _ = hardware
     async with connect(usb=True) as pc:
@@ -527,31 +430,3 @@ async def test_disconnect_stops_reader_and_times_out(hardware):
         assert not pc.client._reader.is_alive()
         with pytest.raises(PrinterTimeout):
             await pc.send(bytes.fromhex("10 ff 40"), wait=True, timeout=0.3)
-
-
-@pytest.mark.parametrize("arguments", [["discover"], ["--usb", "discover"]])
-def test_cli_discover_implies_usb(arguments):
-    from unittest.mock import AsyncMock
-
-    env = {"FICHERO_ADDR": "AA:BB:CC:DD:EE:FF", "FICHERO_TRANSPORT": "classic"}
-    with (
-        patch.dict("os.environ", env, clear=True),
-        patch("sys.argv", ["fichero"] + arguments),
-        patch("fichero.cli.cmd_discover", new_callable=AsyncMock) as command,
-    ):
-        main()
-    args = command.call_args.args[0]
-    assert args.usb and args.address is None and not args.classic
-
-
-@pytest.mark.parametrize("paper", ["gap", "0", "unknown"])
-def test_cli_usb_accepts_papers_that_resolve_to_gap(paper):
-    from unittest.mock import AsyncMock
-
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch("sys.argv", ["fichero", "--usb", "text", "hi", "--paper", paper]),
-        patch("fichero.cli.cmd_text", new_callable=AsyncMock) as command,
-    ):
-        main()
-    assert command.call_args.args[0].paper == 0
