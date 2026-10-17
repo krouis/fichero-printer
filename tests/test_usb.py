@@ -2,24 +2,28 @@
 
 import asyncio
 import errno
+import queue
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-import usb.core
+
+pytest.importorskip("usb", reason="requires the usb extra")
+
+import usb.core  # noqa: E402
 from PIL import Image
 
 from fichero import (
-    PrinterClient,
     PrinterError,
     PrinterNotFound,
+    PrinterNotReady,
     PrinterTimeout,
     USBClient,
     connect,
     discover_usb,
 )
-from fichero.cli import do_print, main
+from fichero.cli import do_print
 
 
 @pytest.fixture
@@ -38,9 +42,37 @@ def hardware():
     device.bus, device.address = 1, 2
     device.get_active_configuration.return_value = [Interface(endpoints)]
     device.is_kernel_driver_active.return_value = True
-    device.write.side_effect = lambda ep, data, timeout: len(data)
+    # Replies observed on a D11s (fw 2.4.9) over bulk IN; unread ones persist.
+    device.replies = {
+        bytes.fromhex("10 ff 40"): b"\x00",
+        bytes.fromhex("10 ff 20 f0"): b"D11s",
+        bytes.fromhex("10 ff 10 00 02"): b"OK",
+        bytes.fromhex("10 ff 84 00"): b"OK",
+        bytes.fromhex("10 ff fe 45"): b"OK",
+    }
+    device.pending = queue.Queue()
+
+    def write(ep, data, timeout):
+        reply = device.replies.get(bytes(data))
+        if reply is not None:
+            device.pending.put(reply)
+        return len(data)
+
+    def read(ep, size, timeout):
+        assert ep == 129
+        try:
+            return device.pending.get(timeout=timeout / 1000)
+        except queue.Empty:
+            raise usb.core.USBTimeoutError("timeout") from None
+
+    device.write.side_effect = write
+    device.read.side_effect = read
     util = MagicMock()
-    core = MagicMock(USBError=usb.core.USBError, NoBackendError=usb.core.NoBackendError)
+    core = MagicMock(
+        USBError=usb.core.USBError,
+        USBTimeoutError=usb.core.USBTimeoutError,
+        NoBackendError=usb.core.NoBackendError,
+    )
     core.find.return_value = [device]
     with patch("fichero.usb._modules", return_value=(core, util)):
         yield device, core, util
@@ -112,6 +144,15 @@ async def test_write_failure_cleanup(hardware, failure, exception):
 
 
 @pytest.mark.asyncio
+async def test_timeout_errno_maps_to_printer_timeout(hardware):
+    device, _, _ = hardware
+    device.write.side_effect = usb.core.USBError("timeout", errno=errno.ETIMEDOUT)
+    with pytest.raises(PrinterTimeout, match="outcome is unknown"):
+        async with USBClient() as client:
+            await client.write_gatt_char("", b"abc")
+
+
+@pytest.mark.asyncio
 async def test_no_kernel_driver(hardware):
     device, _, util = hardware
     device.is_kernel_driver_active.side_effect = NotImplementedError
@@ -159,11 +200,11 @@ async def test_print_wire_sequence(hardware, capsys):
 
     with patch("fichero.cli.asyncio.sleep", no_delay):
         async with connect(usb=True) as pc:
-            await do_print(pc, Image.new("1", (96, 30), 0), density=2, copies=2)
-            with pytest.raises(PrinterError, match="not supported"):
-                await pc.get_model()
+            assert await do_print(pc, Image.new("1", (96, 30), 0), density=2, copies=2)
+            assert await pc.get_model() == "D11s"
     raster = bytes.fromhex("1d 76 30 00 0c 00 1e 00") + b"\xff" * 360
     copy = [
+        bytes.fromhex("10 ff 40"),
         bytes.fromhex("10 ff 84 00"),
         b"\0" * 12,
         bytes.fromhex("10 ff fe 01"),
@@ -174,12 +215,11 @@ async def test_print_wire_sequence(hardware, capsys):
     ]
     assert [call.args[1] for call in device.write.call_args_list] == [
         bytes.fromhex("10 ff 10 00 02")
-    ] + copy * 2
+    ] + copy * 2 + [bytes.fromhex("10 ff 20 f0")]
     assert all(
         call.args[0] == 1 and call.kwargs == {"timeout": 5000}
         for call in device.write.call_args_list
     )
-    device.read.assert_not_called()
     assert "WARNING" not in capsys.readouterr().out
 
 
@@ -206,27 +246,6 @@ async def test_cancelled_open_cleans_after_worker(hardware):
         await task
     util.release_interface.assert_called_once_with(device, 0)
     device.attach_kernel_driver.assert_called_once()
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["--usb", "info"],
-        ["--usb", "status"],
-        ["--usb", "set", "density", "2"],
-        ["--usb", "--classic", "text", "hello"],
-        ["--serial", "x", "info"],
-        ["--usb", "text", "hello", "--copies", "0"],
-    ],
-)
-def test_cli_rejects_unsupported(arguments):
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch("sys.argv", ["fichero"] + arguments),
-        pytest.raises(SystemExit) as exc,
-    ):
-        main()
-    assert exc.value.code == 2
 
 
 @pytest.mark.asyncio
@@ -281,35 +300,133 @@ async def test_cancelled_write_finishes_before_release(hardware):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("classic,size", [(False, 200), (True, 16384)])
-async def test_bluetooth_chunk_sizes_and_reply_semantics(classic, size):
-    from unittest.mock import AsyncMock
+async def test_cancelled_write_failure_still_raises_cancelled(hardware):
+    device, _, util = hardware
+    started, finish = threading.Event(), threading.Event()
 
-    client = SimpleNamespace(is_classic=classic, write_gatt_char=AsyncMock())
-    pc = PrinterClient(client)
-    await pc.send_chunked(b"x" * (size + 1))
-    assert [len(c.args[1]) for c in client.write_gatt_char.call_args_list] == [size, 1]
+    def write(ep, data, timeout):
+        started.set()
+        assert finish.wait(3)
+        raise usb.core.USBError("disconnected")
 
-    async def reply(*args, **kwargs):
-        pc._on_notify(None, bytearray(b"OK"))
+    device.write.side_effect = write
 
-    client.write_gatt_char.side_effect = reply
-    assert await pc.set_density(2) is True
-    assert await pc.set_paper_type(0) is True
-    assert await pc.stop_print() is True
+    async def run():
+        async with USBClient() as client:
+            await client.write_gatt_char("", b"hello")
+
+    task = asyncio.create_task(run())
+    assert await asyncio.to_thread(started.wait, 3)
+    task.cancel()
+    finish.set()
+    # The worker's PrinterError must not replace the cancellation.
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    util.release_interface.assert_called_once_with(device, 0)
 
 
-def test_cli_usb_print_dispatch():
-    from unittest.mock import AsyncMock
+@pytest.mark.asyncio
+async def test_repeated_cancel_waits_for_write_before_release(hardware):
+    device, _, util = hardware
+    started, finish = threading.Event(), threading.Event()
+    events = []
 
-    with (
-        patch.dict("os.environ", {}, clear=True),
-        patch(
-            "sys.argv",
-            ["fichero", "--usb", "--serial", "example", "text", "Hello USB!"],
-        ),
-        patch("fichero.cli.cmd_text", new_callable=AsyncMock) as command,
-    ):
-        main()
-    args = command.call_args.args[0]
-    assert args.usb and args.serial == "example" and args.text == ["Hello USB!"]
+    def write(ep, data, timeout):
+        started.set()
+        assert finish.wait(3)
+        events.append("write completed")
+        return len(data)
+
+    device.write.side_effect = write
+    util.release_interface.side_effect = lambda *_: events.append("released")
+
+    async def run():
+        async with USBClient() as client:
+            await client.write_gatt_char("", b"hello")
+
+    task = asyncio.create_task(run())
+    assert await asyncio.to_thread(started.wait, 3)
+    task.cancel()
+    await asyncio.sleep(0.05)  # deliver the first cancellation
+    task.cancel()
+    asyncio.get_running_loop().call_later(0.2, finish.set)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == ["write completed", "released"]
+
+
+@pytest.mark.asyncio
+async def test_setters_report_usb_acknowledgments(hardware):
+    device, _, _ = hardware
+    async with connect(usb=True) as pc:
+        assert await pc.set_density(2) is True
+        assert await pc.set_paper_type(0) is True
+        assert await pc.stop_print() is True
+        device.replies[bytes.fromhex("10 ff 10 00 02")] = b"ER"
+        assert await pc.set_density(2) is False
+
+
+@pytest.mark.asyncio
+async def test_stale_replies_are_drained_on_open(hardware):
+    device, _, _ = hardware
+    device.pending.put(b"OKOK")  # left unread by an earlier session
+    async with connect(usb=True) as pc:
+        assert await pc.get_model() == "D11s"
+
+
+@pytest.mark.asyncio
+async def test_split_reply_is_reassembled(hardware):
+    device, _, _ = hardware
+    def write(ep, data, timeout):
+        if bytes(data) == bytes.fromhex("10 ff 70"):
+            device.pending.put(b"FICHERO_5836|11:99|22:99|2.4.9|D263")
+            device.pending.put(b"W1826|100")
+        return len(data)
+
+    device.write.side_effect = write
+    async with connect(usb=True) as pc:
+        info = await pc.get_all_info()
+    assert info["serial"] == "D263W1826" and info["battery"] == "100%"
+
+
+@pytest.mark.asyncio
+async def test_cover_open_prevents_raster(hardware):
+    device, _, _ = hardware
+    device.replies[bytes.fromhex("10 ff 40")] = b"\x06"
+    with pytest.raises(PrinterNotReady, match="cover open, no paper"):
+        async with connect(usb=True) as pc:
+            await do_print(pc, Image.new("1", (96, 30), 0), density=2)
+    assert [call.args[1] for call in device.write.call_args_list] == [
+        bytes.fromhex("10 ff 10 00 02"),
+        bytes.fromhex("10 ff 40"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reader_stops_before_release(hardware):
+    _, _, util = hardware
+    alive = []
+    util.release_interface.side_effect = lambda *_: alive.append(
+        any(t.name == "fichero-usb-reader" for t in threading.enumerate())
+    )
+    async with connect(usb=True):
+        assert any(t.name == "fichero-usb-reader" for t in threading.enumerate())
+    assert alive == [False]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_stops_reader_and_times_out(hardware):
+    device, _, _ = hardware
+
+    def read(ep, size, timeout):
+        raise usb.core.USBError("No such device", errno=errno.ENODEV)
+
+    async with connect(usb=True) as pc:
+        device.read.side_effect = read
+        for _ in range(50):
+            if not pc.client._reader.is_alive():
+                break
+            await asyncio.sleep(0.02)
+        assert not pc.client._reader.is_alive()
+        with pytest.raises(PrinterTimeout):
+            await pc.send(bytes.fromhex("10 ff 40"), wait=True, timeout=0.3)

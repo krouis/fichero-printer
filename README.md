@@ -77,43 +77,32 @@ uv run fichero --address AA:BB:CC:DD:EE:FF info
 
 ## USB printing
 
-USB raster printing is hardware-verified on the AiYin D11s/FICHERO
-`09c5:0200` (firmware 2.4.9); firmware is not restricted in software.
-Other VID/PIDs are not supported. The Web GUI still uses Bluetooth.
-
-Install the optional Python dependency and a system libusb backend:
+USB printing is hardware-verified on the AiYin D11s/FICHERO `09c5:0200`
+(firmware 2.4.9, Linux); other VID/PIDs are not supported. The Web GUI still
+uses Bluetooth. Install the optional Python dependency and a system libusb
+backend:
 
 ```sh
 uv sync --extra usb
 # Debian/Ubuntu:
 sudo apt install libusb-1.0-0
 
-uv run --extra usb fichero --usb discover
+uv run --extra usb fichero discover
+uv run --extra usb fichero --usb info
+uv run --extra usb fichero --usb status
 uv run --extra usb fichero --usb text "Hello USB!"
-uv run --extra usb fichero --usb image label.png
 uv run --extra usb fichero --usb image label.png --copies 3
 uv run --extra usb fichero --usb --serial YOUR_USB_SERIAL image label.png
 ```
 
-Unset `FICHERO_ADDR` and `FICHERO_TRANSPORT=classic` when using USB.
-Multiple connected printers require a serial selector; no serial is hardcoded.
-Only gap-separated stock is verified. Density and paper commands are sent as
-part of printing. USB `info`, `status`, and standalone `set` are unavailable:
-Bluetooth queries/notifications have not been demonstrated over USB. A completed
-USB write confirms transport delivery only, not acknowledgment or physical print
-completion. A timeout/partial write leaves the print outcome unknown; inspect the
-printer before retrying to avoid duplicate labels.
+All commands work as over Bluetooth, including the cover/paper check before each
+copy and the stop acknowledgment. `--usb` ignores `FICHERO_ADDR` and
+`FICHERO_TRANSPORT`, and `--serial` is required when several printers are
+connected. Only gap-separated stock is verified. A timeout or partial write
+leaves the print outcome unknown; inspect the printer before retrying.
 
-The [USB Printer Class specification](https://www.usb.org/sites/default/files/usbprint11a021811.pdf)
-defines a port byte separate from the proprietary Bluetooth status.
-Its bits are paper-empty (5), selected (4), and not-error (3). The observed `0x18`
-is not proof that D11s paper/cover sensors are reflected in it, so it is not used
-to gate printing or report readiness. No bulk-IN query is required to print.
-
-### Linux permissions and contention
-
-For active local desktop users on systems with udev and systemd-logind, install
-the narrowly scoped ACL rule and reconnect the printer:
+On Linux with udev and systemd-logind, install the ACL rule for the active
+desktop user and reconnect the printer:
 
 ```sh
 sudo install -m 644 contrib/70-fichero-usb.rules /etc/udev/rules.d/
@@ -121,38 +110,8 @@ sudo udevadm control --reload-rules
 # Unplug/replug the printer after reloading.
 ```
 
-`uaccess` grants access to the active seat, not generally to SSH sessions or
-services. On headless systems, an administrator can instead create a dedicated
-`fichero` group, add the printing user to it, and use this rule (log in again
-after changing group membership):
-
-```udev
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="09c5", ATTR{idProduct}=="0200", GROUP="fichero", MODE="0660"
-```
-
-Close other printer clients before use. The transport temporarily detaches
-`usblp` if it owns the interface and restores it on exit, including after errors.
-A busy error can indicate another libusb client or a CUPS backend using the
-printer. Avoid simultaneous CUPS jobs; check both distribution and Snap CUPS
-installations. Pause the relevant queue yourself if needed. This driver does not
-change queues, PPDs, or system services and does not require a CUPS driver.
-If restoration fails, the error/warning is reported; reconnect the device.
-
-Linux is the hardware-verified platform. macOS requires libusb (for example,
-`brew install libusb`); Windows requires libusb plus a compatible interface driver
-(such as WinUSB), which can replace OS printer access. Neither platform has been
-hardware-tested here. Missing PyUSB and missing libusb produce distinct errors.
-The device must already have an active USB configuration with one bidirectional
-Printer Class interface (alternate setting zero); the transport validates its
-bulk endpoints without resetting the device.
-
-Library users can use `connect(usb=True, serial=None)` and the existing print
-pipeline (`fichero.cli.do_print`), or `USBClient` directly. `discover_usb()` returns
-serial/bus/address records without claiming interfaces. `PrinterClient.is_usb`
-identifies the transport. On USB, `set_density`, `set_paper_type`, and `stop_print`
-return `False` because no acknowledgment is requested; successful transfers are
-reported through normal return and failures through `PrinterError` subclasses.
-All other reply-dependent protocol methods fail before sending USB commands.
+See [docs/USB.md](docs/USB.md) for headless permissions, usblp/CUPS contention,
+macOS/Windows, library use, and the observed reply behaviour.
 
 ## CLI Usage
 

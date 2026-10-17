@@ -44,17 +44,17 @@ class TestRFCOMMClientPlatformGuard:
 class TestRFCOMMClientConnect:
     @pytest.mark.asyncio
     async def test_connect_and_close(self):
+        import socket
+
         mock_sock = MagicMock()
-        mock_socket_mod = MagicMock()
-        mock_socket_mod.AF_BLUETOOTH = 31
-        mock_socket_mod.SOCK_STREAM = 1
-        mock_socket_mod.BTPROTO_RFCOMM = 3
-        mock_socket_mod.socket.return_value = mock_sock
         loop = asyncio.get_running_loop()
 
+        # Patch only what RFCOMMClient uses; Bluetooth constants may be absent.
         with (
             patch("fichero.printer._RFCOMM_AVAILABLE", True),
-            patch.dict("sys.modules", {"socket": mock_socket_mod}),
+            patch.object(socket, "AF_BLUETOOTH", 31, create=True),
+            patch.object(socket, "BTPROTO_RFCOMM", 3, create=True),
+            patch.object(socket, "socket", return_value=mock_sock) as make_socket,
             patch.object(loop, "sock_connect", new_callable=AsyncMock) as connect_socket,
         ):
             client = RFCOMMClient("AA:BB:CC:DD:EE:FF", channel=3)
@@ -64,7 +64,7 @@ class TestRFCOMMClientConnect:
                     mock_sock, ("AA:BB:CC:DD:EE:FF", 3)
                 )
                 mock_sock.setblocking.assert_called_once_with(False)
-            mock_socket_mod.socket.assert_called_once_with(31, 1, 3)
+            make_socket.assert_called_once_with(31, socket.SOCK_STREAM, 3)
             mock_sock.close.assert_called_once()
             assert client._sock is None
 

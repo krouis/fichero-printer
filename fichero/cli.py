@@ -54,10 +54,9 @@ async def do_print(
             print(f"  Copy {copy_num + 1}/{copies}...")
 
         # Check status before each copy (matches decompiled app behaviour)
-        if not pc.is_usb:
-            status = await pc.get_status()
-            if not status.ok:
-                raise PrinterNotReady(f"Printer not ready: {status}")
+        status = await pc.get_status()
+        if not status.ok:
+            raise PrinterNotReady(f"Printer not ready: {status}")
 
         # AiYin print sequence (from decompiled APK)
         await pc.set_paper_type(paper)
@@ -78,9 +77,7 @@ async def do_print(
         await asyncio.sleep(DELAY_AFTER_FEED)
 
         ok = await pc.stop_print()
-        if pc.is_usb:
-            await asyncio.sleep(DELAY_COMMAND_GAP)
-        elif not ok:
+        if not ok:
             print("  WARNING: no OK/0xAA from stop command")
 
     return True
@@ -129,8 +126,7 @@ async def cmd_text(args: argparse.Namespace) -> None:
         print(f'Printing "{text}"...')
         ok = await do_print(pc, img, args.density, paper=args.paper,
                             copies=args.copies, dither=False, max_rows=label_h)
-        print("USB transfers completed; acknowledgment and physical completion unverified."
-              if pc.is_usb else ("Done." if ok else "FAILED."))
+        print("Done." if ok else "FAILED.")
 
 
 async def cmd_image(args: argparse.Namespace) -> None:
@@ -142,8 +138,7 @@ async def cmd_image(args: argparse.Namespace) -> None:
         ok = await do_print(pc, img, args.density, paper=args.paper,
                             copies=args.copies, dither=not args.no_dither,
                             max_rows=label_h)
-        print("USB transfers completed; acknowledgment and physical completion unverified."
-              if pc.is_usb else ("Done." if ok else "FAILED."))
+        print("Done." if ok else "FAILED.")
 
 
 async def cmd_set(args: argparse.Namespace) -> None:
@@ -205,20 +200,19 @@ def _parse_paper(value: str) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fichero D11s Label Printer")
-    parser.add_argument("--address", default=os.environ.get("FICHERO_ADDR"),
+    parser.add_argument("--address",
                         help="BLE address (skip scanning, or set FICHERO_ADDR)")
     transport = parser.add_mutually_exclusive_group()
     transport.add_argument("--usb", action="store_true", help="Use USB (requires the usb extra)")
     parser.add_argument("--serial", help="Select USB printer by serial number")
     transport.add_argument("--classic", action="store_true",
-                        default=os.environ.get("FICHERO_TRANSPORT", "").lower() == "classic",
                         help="Use Classic Bluetooth (RFCOMM) instead of BLE (Linux only, "
                              "or set FICHERO_TRANSPORT=classic)")
     parser.add_argument("--channel", type=int, default=1,
                         help="RFCOMM channel (default: 1, only used with --classic)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_discover = sub.add_parser("discover", help="List USB printers (with --usb)")
+    p_discover = sub.add_parser("discover", help="List USB printers")
     p_discover.set_defaults(func=cmd_discover)
 
     p_info = sub.add_parser("info", help="Show device info")
@@ -262,24 +256,27 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.usb and args.classic:
-        parser.error("--usb conflicts with Classic transport (including FICHERO_TRANSPORT)")
+    if args.command == "discover":
+        if args.address or args.classic:
+            parser.error("discover lists USB printers; --address/--classic do not apply")
+        args.usb = True
     if args.usb and args.address:
-        parser.error("--usb conflicts with --address/FICHERO_ADDR; unset FICHERO_ADDR")
+        parser.error("--usb conflicts with --address")
+    # Environment defaults apply to Bluetooth only; an explicit --usb wins.
+    if not args.usb:
+        args.address = args.address or os.environ.get("FICHERO_ADDR")
+        args.classic = (args.classic
+                        or os.environ.get("FICHERO_TRANSPORT", "").lower() == "classic")
     if args.serial and not args.usb:
         parser.error("--serial requires --usb")
-    if args.usb and args.command not in ("text", "image", "discover"):
-        parser.error("USB supports text, image and discover; info/status/set are unverified")
-    if args.command == "discover" and not args.usb:
-        parser.error("discover requires --usb")
     if getattr(args, "copies", 1) < 1:
         parser.error("--copies must be positive")
-    if args.usb and getattr(args, "paper", "gap") not in ("gap", "0"):
-        parser.error("Only gap paper is verified over USB")
 
     # Resolve --paper string to int for print commands
     if hasattr(args, "paper") and isinstance(args.paper, str):
         args.paper = _parse_paper(args.paper)
+    if args.usb and getattr(args, "paper", PAPER_GAP) != PAPER_GAP:
+        parser.error("Only gap paper is verified over USB")
 
     try:
         asyncio.run(args.func(args))
