@@ -44,16 +44,23 @@ def _error(exc):
 
 
 async def _worker(func, *args):
-    # A cancelled to_thread call keeps running. Wait before allowing cleanup to
-    # release the handle, including when cancellation occurs during acquisition.
-    task = asyncio.create_task(asyncio.to_thread(func, *args))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
+    # A cancelled to_thread call keeps running. Wait for it through any number
+    # of cancellations so cleanup never releases the handle mid-transfer, then
+    # re-raise the cancellation in preference to any error the worker produced.
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    cancelled = False
+    while not task.done():
         try:
-            await task
-        finally:
-            raise
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            pass  # surfaced below through task.result()
+    if cancelled:
+        if not task.cancelled():
+            task.exception()  # mark retrieved; cancellation takes precedence
+        raise asyncio.CancelledError
+    return task.result()
 
 
 def _serial(device):

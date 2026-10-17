@@ -281,6 +281,62 @@ async def test_cancelled_write_finishes_before_release(hardware):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_write_failure_still_raises_cancelled(hardware):
+    device, _, util = hardware
+    started, finish = threading.Event(), threading.Event()
+
+    def write(ep, data, timeout):
+        started.set()
+        assert finish.wait(3)
+        raise usb.core.USBError("disconnected")
+
+    device.write.side_effect = write
+
+    async def run():
+        async with USBClient() as client:
+            await client.write_gatt_char("", b"hello")
+
+    task = asyncio.create_task(run())
+    assert await asyncio.to_thread(started.wait, 3)
+    task.cancel()
+    finish.set()
+    # The worker's PrinterError must not replace the cancellation.
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    util.release_interface.assert_called_once_with(device, 0)
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_waits_for_write_before_release(hardware):
+    device, _, util = hardware
+    started, finish = threading.Event(), threading.Event()
+    events = []
+
+    def write(ep, data, timeout):
+        started.set()
+        assert finish.wait(3)
+        events.append("write completed")
+        return len(data)
+
+    device.write.side_effect = write
+    util.release_interface.side_effect = lambda *_: events.append("released")
+
+    async def run():
+        async with USBClient() as client:
+            await client.write_gatt_char("", b"hello")
+
+    task = asyncio.create_task(run())
+    assert await asyncio.to_thread(started.wait, 3)
+    task.cancel()
+    await asyncio.sleep(0.05)  # deliver the first cancellation
+    task.cancel()
+    asyncio.get_running_loop().call_later(0.2, finish.set)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == ["write completed", "released"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("classic,size", [(False, 200), (True, 16384)])
 async def test_bluetooth_chunk_sizes_and_reply_semantics(classic, size):
     from unittest.mock import AsyncMock
