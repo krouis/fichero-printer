@@ -1,7 +1,7 @@
 [project]
 name = "fichero-printer"
 version = "0.1.0"
-description = "Fichero D11s thermal label printer - BLE CLI tool"
+description = "Fichero D11s thermal label printer - BLE, Classic Bluetooth and USB CLI tool"
 requires-python = ">=3.10"
 dependencies = [
     "bleak",

@@ -1,4 +1,4 @@
-"""Fichero D11s thermal label printer - BLE + Classic Bluetooth interface."""
+"""Fichero D11s thermal label printer - BLE, Classic Bluetooth and USB interface."""
 
 from fichero.printer import (
     RFCOMM_CHANNEL,

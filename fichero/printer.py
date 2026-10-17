@@ -1,5 +1,5 @@
 """
-Fichero / D11s thermal label printer - BLE + Classic Bluetooth interface.
+Fichero / D11s thermal label printer - BLE, Classic Bluetooth and USB interface.
 
 Protocol reverse-engineered from decompiled Fichero APK (com.lj.fichero).
 Device class: AiYinNormalDevice (LuckPrinter SDK)
