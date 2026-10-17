@@ -6,6 +6,7 @@ threads, serialized through cancellation; a reader thread delivers replies.
 """
 
 import asyncio
+import errno
 import sys
 import threading
 import warnings
@@ -31,19 +32,22 @@ def _modules():
 
 
 def _error(exc):
-    if getattr(exc, "errno", None) == 13:
+    # PyUSB maps libusb errors to the platform's errno values.
+    core, _ = _modules()
+    code = getattr(exc, "errno", None)
+    if code == errno.EACCES:
         return PrinterError(
             "USB permission denied; configure the D11s udev rule (see README)"
         )
-    if getattr(exc, "errno", None) == 16:
+    if code == errno.EBUSY:
         return PrinterError(
             "USB interface busy; close other clients and check CUPS/usblp contention"
         )
-    if getattr(exc, "errno", None) == 110 or type(exc).__name__ == "USBTimeoutError":
+    if code == errno.ETIMEDOUT or isinstance(exc, core.USBTimeoutError):
         return PrinterTimeout(
             "USB transfer timed out; print outcome is unknown (do not retry blindly)"
         )
-    if type(exc).__name__ == "NoBackendError":
+    if isinstance(exc, core.NoBackendError):
         return PrinterError("USB backend unavailable; install libusb (see README)")
     return PrinterError(f"USB operation failed: {exc}")
 

@@ -142,6 +142,15 @@ async def test_write_failure_cleanup(hardware, failure, exception):
 
 
 @pytest.mark.asyncio
+async def test_timeout_errno_maps_to_printer_timeout(hardware):
+    device, _, _ = hardware
+    device.write.side_effect = usb.core.USBError("timeout", errno=errno.ETIMEDOUT)
+    with pytest.raises(PrinterTimeout, match="outcome is unknown"):
+        async with USBClient() as client:
+            await client.write_gatt_char("", b"abc")
+
+
+@pytest.mark.asyncio
 async def test_no_kernel_driver(hardware):
     device, _, util = hardware
     device.is_kernel_driver_active.side_effect = NotImplementedError
