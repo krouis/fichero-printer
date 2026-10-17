@@ -11,7 +11,13 @@ import sys
 import threading
 import warnings
 
-from fichero.printer import PrinterError, PrinterNotFound, PrinterTimeout
+from fichero.printer import (
+    CHUNK_SIZE_USB,
+    DELAY_CHUNK_GAP_USB,
+    PrinterError,
+    PrinterNotFound,
+    PrinterTimeout,
+)
 
 USB_VID = 0x09C5
 USB_PID = 0x0200
@@ -113,6 +119,8 @@ class USBClient:
     """Async transport adapter with the write_gatt_char/start_notify interface."""
 
     is_usb = True
+    chunk_size = CHUNK_SIZE_USB
+    chunk_delay = DELAY_CHUNK_GAP_USB
 
     def __init__(self, serial: str | None = None, timeout: int = 5000):
         if timeout <= 0:

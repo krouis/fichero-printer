@@ -35,7 +35,7 @@ NOTIFY_UUID = "00002af0-0000-1000-8000-00805f9b34fb"
 
 PRINTHEAD_PX = 96
 BYTES_PER_ROW = PRINTHEAD_PX // 8  # 12
-CHUNK_SIZE_USB = 256        # hardware-verified bulk transfer pacing
+CHUNK_SIZE_USB = 256        # hardware-verified on D11s fw 2.4.9
 CHUNK_SIZE_BLE = 200        # BLE MTU-limited
 CHUNK_SIZE_CLASSIC = 16384  # from decompiled app (C1703d.java), stream-based
 
@@ -50,6 +50,7 @@ PAPER_CONTINUOUS = 0x02
 DELAY_AFTER_DENSITY = 0.10   # printer needs time to apply density setting
 DELAY_COMMAND_GAP = 0.05     # minimum gap between sequential commands
 DELAY_CHUNK_GAP = 0.02       # inter-chunk pacing for BLE throughput
+DELAY_CHUNK_GAP_USB = 0.02   # hardware-verified bulk pacing on D11s fw 2.4.9
 DELAY_RASTER_SETTLE = 0.50   # wait for printhead after raster transfer
 DELAY_AFTER_FEED = 0.30      # wait after form feed before stop command
 DELAY_NOTIFY_EXTRA = 0.05    # extra wait for trailing BLE notification fragments
@@ -135,7 +136,9 @@ class RFCOMMClient:
     beyond stdlib.
     """
 
-    is_classic = True  # transport marker for PrinterClient chunk sizing
+    is_classic = True  # transport marker
+    chunk_size = CHUNK_SIZE_CLASSIC
+    chunk_delay = 0  # stream-based; no pacing needed
 
     def __init__(self, address: str, channel: int = RFCOMM_CHANNEL):
         self._address = address
@@ -208,8 +211,10 @@ class PrinterClient:
         self._buf = bytearray()
         self._event = asyncio.Event()
         self._lock = asyncio.Lock()
-        self._is_classic = getattr(client, "is_classic", False)
-        self.is_usb = getattr(client, "is_usb", False) is True
+        # Transports declare their own pacing; BleakClient does not, so BLE is the default.
+        self._chunk_size = getattr(client, "chunk_size", CHUNK_SIZE_BLE)
+        self._chunk_delay = getattr(client, "chunk_delay", DELAY_CHUNK_GAP)
+        self.is_usb = bool(getattr(client, "is_usb", False))
 
     def _on_notify(self, _char: BleakGATTCharacteristic, data: bytearray) -> None:
         self._buf.extend(data)
@@ -234,11 +239,8 @@ class PrinterClient:
 
     async def send_chunked(self, data: bytes, chunk_size: int | None = None) -> None:
         if chunk_size is None:
-            if self.is_usb:
-                chunk_size = CHUNK_SIZE_USB
-            else:
-                chunk_size = CHUNK_SIZE_CLASSIC if self._is_classic else CHUNK_SIZE_BLE
-        delay = 0 if self._is_classic else DELAY_CHUNK_GAP
+            chunk_size = self._chunk_size
+        delay = self._chunk_delay
         async with self._lock:
             for i in range(0, len(data), chunk_size):
                 chunk = data[i : i + chunk_size]
