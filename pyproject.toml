@@ -18,3 +18,9 @@ packages = ["fichero"]
 
 [project.scripts]
 fichero = "fichero.cli:main"
+
+[project.optional-dependencies]
+usb = ["pyusb>=1.2.1"]
+
+[dependency-groups]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]

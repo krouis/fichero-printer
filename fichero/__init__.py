@@ -12,6 +12,8 @@ from fichero.printer import (
     connect,
 )
 
+from fichero.usb import USBClient, discover_usb
+
 __all__ = [
     "RFCOMM_CHANNEL",
     "PrinterClient",
@@ -22,4 +24,6 @@ __all__ = [
     "PrinterTimeout",
     "RFCOMMClient",
     "connect",
+    "USBClient",
+    "discover_usb",
 ]

@@ -35,6 +35,7 @@ NOTIFY_UUID = "00002af0-0000-1000-8000-00805f9b34fb"
 
 PRINTHEAD_PX = 96
 BYTES_PER_ROW = PRINTHEAD_PX // 8  # 12
+CHUNK_SIZE_USB = 256        # hardware-verified bulk transfer pacing
 CHUNK_SIZE_BLE = 200        # BLE MTU-limited
 CHUNK_SIZE_CLASSIC = 16384  # from decompiled app (C1703d.java), stream-based
 
@@ -208,6 +209,7 @@ class PrinterClient:
         self._event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._is_classic = getattr(client, "is_classic", False)
+        self.is_usb = getattr(client, "is_usb", False) is True
 
     def _on_notify(self, _char: BleakGATTCharacteristic, data: bytearray) -> None:
         self._buf.extend(data)
@@ -217,6 +219,8 @@ class PrinterClient:
         await self.client.start_notify(NOTIFY_UUID, self._on_notify)
 
     async def send(self, data: bytes, wait: bool = False, timeout: float = 2.0) -> bytes:
+        if wait and self.is_usb:
+            raise PrinterError("Proprietary queries/acknowledgments are not supported over USB")
         async with self._lock:
             if wait:
                 self._buf.clear()
@@ -232,7 +236,10 @@ class PrinterClient:
 
     async def send_chunked(self, data: bytes, chunk_size: int | None = None) -> None:
         if chunk_size is None:
-            chunk_size = CHUNK_SIZE_CLASSIC if self._is_classic else CHUNK_SIZE_BLE
+            if self.is_usb:
+                chunk_size = CHUNK_SIZE_USB
+            else:
+                chunk_size = CHUNK_SIZE_CLASSIC if self._is_classic else CHUNK_SIZE_BLE
         delay = 0 if self._is_classic else DELAY_CHUNK_GAP
         async with self._lock:
             for i in range(0, len(data), chunk_size):
@@ -302,13 +309,15 @@ class PrinterClient:
     # --- Config commands (tested on D11s) ---
 
     async def set_density(self, level: int) -> bool:
-        """0=light, 1=medium, 2=thick. Returns True if printer responded OK."""
-        r = await self.send(bytes([0x10, 0xFF, 0x10, 0x00, level]), wait=True)
+        """0=light, 1=medium, 2=thick. USB sends without ACK, returning False."""
+        r = await self.send(bytes([0x10, 0xFF, 0x10, 0x00, level]), wait=not self.is_usb)
         return r == b"OK"
 
     async def set_paper_type(self, paper: int = PAPER_GAP) -> bool:
-        """0=gap/label, 1=black mark, 2=continuous."""
-        r = await self.send(bytes([0x10, 0xFF, 0x84, paper]), wait=True)
+        """0=gap/label, 1=black mark, 2=continuous. USB has no ACK."""
+        if self.is_usb and paper != PAPER_GAP:
+            raise PrinterError("Only gap paper is verified over USB")
+        r = await self.send(bytes([0x10, 0xFF, 0x84, paper]), wait=not self.is_usb)
         return r == b"OK"
 
     async def set_shutdown_time(self, minutes: int) -> bool:
@@ -339,8 +348,8 @@ class PrinterClient:
         await self.send(bytes([0x1D, 0x0C]))
 
     async def stop_print(self) -> bool:
-        """AiYin stop: 10 FF FE 45. Waits for 0xAA or 'OK'."""
-        r = await self.send(bytes([0x10, 0xFF, 0xFE, 0x45]), wait=True, timeout=60.0)
+        """AiYin stop: 10 FF FE 45. USB sends without ACK, returning False."""
+        r = await self.send(bytes([0x10, 0xFF, 0xFE, 0x45]), wait=not self.is_usb, timeout=60.0)
         if r:
             return r[0] == 0xAA or r.startswith(b"OK")
         return False
@@ -363,9 +372,25 @@ async def connect(
     address: str | None = None,
     classic: bool = False,
     channel: int = RFCOMM_CHANNEL,
+    *,
+    usb: bool = False,
+    serial: str | None = None,
 ) -> AsyncGenerator[PrinterClient, None]:
-    """Discover printer, connect, and yield a ready PrinterClient."""
-    if classic:
+    """Discover/connect over BLE (default), RFCOMM, or optional USB.
+
+    USB supports raster printing without proprietary replies. ``serial`` selects
+    a USB device; ambiguous device selection raises PrinterError.
+    """
+    if usb and (classic or address):
+        raise PrinterError("USB cannot be combined with a Bluetooth address or Classic transport")
+    if serial is not None and not usb:
+        raise PrinterError("USB serial selection requires usb=True")
+    if usb:
+        from fichero.usb import USBClient
+
+        async with USBClient(serial=serial) as client:
+            yield PrinterClient(client)
+    elif classic:
         if not address:
             raise PrinterError("--address is required for Classic Bluetooth (no scanning)")
         async with RFCOMMClient(address, channel) as client:
